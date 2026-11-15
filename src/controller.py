@@ -19,6 +19,22 @@ class RoverController:
         self.left_motor = self.sim.getObject(left_motor)
         self.right_motor = self.sim.getObject(right_motor)
 
+        # Ensure built-in PioneerP3DX demo script is removed and initial spawn height
+        # is above the terrain surface at (-4, -4) so the rover never flips on frame 0.
+        try:
+            script_handle = self.sim.getObject(f"{rover_path}/Script")
+            self.sim.removeObjects([script_handle])
+        except Exception:
+            pass
+
+        init_pos = self.sim.getObjectPosition(self.rover_handle, self.sim.handle_world)
+        if init_pos[2] < 0.185:
+            self.sim.setObjectPosition(
+                self.rover_handle,
+                [init_pos[0], init_pos[1], 0.185],
+                self.sim.handle_world,
+            )
+
         # Rover physical parameters (Pioneer P3-DX)
         self.wheel_radius = 0.0975   # meters
         self.wheel_base = 0.381      # meters between left and right wheels
@@ -48,11 +64,14 @@ class RoverController:
         self.drawing_handle = None
 
     def get_pose(self):
-        """Returns (x, y, z, roll, pitch, yaw) in world coordinates."""
-        pos = self.sim.getObjectPosition(self.rover_handle, self.sim.handle_world)
-        orient = self.sim.getObjectOrientation(self.rover_handle, self.sim.handle_world)
-        roll, pitch, yaw = orient[0], orient[1], orient[2]
-        return pos[0], pos[1], pos[2], roll, pitch, yaw
+        """Returns (x, y, z, roll, pitch, yaw) in world coordinates using the 3x4 pose matrix."""
+        m = self.sim.getObjectMatrix(self.rover_handle, self.sim.handle_world)
+        x, y, z = m[3], m[7], m[11]
+        # Rover local +X is forward (m[0], m[4], m[8]), local +Y is left (m[1], m[5], m[9])
+        yaw = math.atan2(m[4], m[0])
+        pitch = math.asin(max(-1.0, min(1.0, m[8])))
+        roll = math.asin(max(-1.0, min(1.0, m[9])))
+        return x, y, z, roll, pitch, yaw
 
     def draw_path_3d(self, waypoints, color=(0.0, 1.0, 0.2), z_offset=0.12, elevation_map=None):
         """Draws the planned waypoint path as a 3D line inside CoppeliaSim."""

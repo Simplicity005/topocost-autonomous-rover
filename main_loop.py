@@ -1,5 +1,6 @@
 import os
 import argparse
+from scipy.ndimage import gaussian_filter
 from coppeliasim_zmqremoteapi_client import RemoteAPIClient
 from src.controller import RoverController
 from src.perception import TerrainMapper
@@ -29,6 +30,11 @@ def main():
         action="store_true",
         help="Force standalone Member 3 test mode using mock S-curve waypoints",
     )
+    parser.add_argument(
+        "--no-show",
+        action="store_true",
+        help="Save telemetry CSV and plot without opening an interactive Matplotlib window",
+    )
     args = parser.parse_args()
 
     os.makedirs("results", exist_ok=True)
@@ -37,12 +43,13 @@ def main():
     print("[Main] Connecting to CoppeliaSim via ZeroMQ...")
     client = RemoteAPIClient()
     sim = client.require("sim")
+    sim.stopSimulation()
     try:
         sim.setStepping(True)
     except Exception:
         client.setStepping(True)
 
-    # 2. Initialize Member 3's Rover Controller
+    # 2. Initialize Member 3's Rover Controller (auto-disables built-in demo script & fixes spawn Z)
     rover = RoverController(sim)
 
     # Try connecting Member 1's TerrainMapper unless --mock is requested
@@ -85,7 +92,9 @@ def main():
 
             # --- DYNAMIC REPLANNING HOOK (Every 10 steps / 0.5s) ---
             if mapper is not None and step_count % 10 == 0:
-                elevation_map = mapper.update_map()
+                raw_elevation_map = mapper.update_map()
+                # Smooth camera-frustum boundary transition before gradient computation
+                elevation_map = gaussian_filter(raw_elevation_map, sigma=2.0)
                 rx, ry, _, _, _, _ = rover.get_pose()
                 planned_wps, _ = plan_path(
                     (rx, ry), goal_world, elevation_map, mode=args.mode
@@ -117,7 +126,7 @@ def main():
         rover.stop()
         sim.stopSimulation()
         print("[Main] Simulation stopped.")
-        rover.save_and_plot_results()
+        rover.save_and_plot_results(show_plot=not args.no_show)
 
 
 if __name__ == "__main__":

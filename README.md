@@ -14,7 +14,8 @@ An autonomous off-road rover simulation built in **CoppeliaSim** and **Python** 
   - Gravitational + rolling-resistance battery expenditure model in Joules (`E(A -> B) = m * g * max(0, dh) + mu * m * g * cos(theta) * dd`).
   - Dynamic 8-connected Repeated A* search supporting both `topocost` (energy-optimal) and `baseline` (2D shortest-distance) modes with moving-average trajectory smoothing.
 - [x] **Module 3 — Closed-Loop Rover Control, Telemetry & Master Loop (`src/controller.py`, `main_loop.py`)**: Complete
-  - Differential-drive Pure Pursuit + proportional yaw controller for `/PioneerP3DX` in synchronous stepping mode (`50ms` physics steps).
+  - Differential-drive Pure Pursuit + proportional yaw controller for `/PioneerP3DX` in synchronous stepping mode (`50ms` physics steps) using 3D rotation-matrix pose extraction.
+  - Automatic pre-start scene stabilization (removes `/PioneerP3DX/Script` if present, lifts `/PioneerP3DX` above the `(-4, -4)` terrain surface so wheels never interpenetrate on frame 0, and applies Gaussian frustum-boundary smoothing before gradient computation).
   - Real-time 3D trajectory rendering inside CoppeliaSim (`sim.addDrawingObject`) lifted onto the 2.5D terrain surface.
   - Closed-loop dynamic replanning every 10 simulation steps (`0.5s`) and automated telemetry export (`results/telemetry_logs.csv` and 3-panel Matplotlib dashboard `results/benchmark_comparison.png`).
 
@@ -75,7 +76,7 @@ pip install -r requirements.txt
 ### 3. Opening the Scene in CoppeliaSim
 1. Launch **CoppeliaSim**.
 2. Click **File → Open scene...** and load `scenes/topocost_arena.ttt`.
-3. **Important:** Leave the simulation **Stopped** inside CoppeliaSim (do **not** press Play manually). `main_loop.py` automatically starts, steps (`50ms`), and stops CoppeliaSim via ZeroMQ.
+3. **Important:** Leave the simulation **Stopped** inside CoppeliaSim (do **not** press Play manually). `main_loop.py` automatically stabilizes the rover's initial spawn height, disables the built-in demo script, and starts/steps/stops CoppeliaSim via ZeroMQ.
 
 ### 4. Running the Simulation Modes
 With CoppeliaSim open and `scenes/topocost_arena.ttt` loaded, run any of the following in your terminal:
@@ -107,49 +108,24 @@ Tests purely the Pure Pursuit controller, 3D path rendering, and telemetry logge
 .venv/bin/python -m src.planner
 ```
 
-### 5. Viewing Telemetry Outputs
-When the rover reaches the goal (or when you stop the run with `Ctrl+C`):
-* CoppeliaSim stops automatically.
-* A **3-panel Matplotlib window** pops up displaying:
-  1. **Rover 2D Trajectory** (`X` vs `Y` in meters)
-  2. **Battery State of Charge (`SoC %`)** vs. simulation time
-  3. **Rover Pitch Angle (`deg`)** vs. simulation time
+### 5. Viewing Telemetry Outputs & Verified Benchmark Results
+When the rover reaches the goal `((3.5, 3.5))`:
+* **Verified TopoCost Run (`scenes/topocost_arena.ttt`):**
+  * **Travel Time:** `34.40 s` (`688` synchronous steps)
+  * **Total Energy Expended:** `202.9 J` (`91.88%` Battery SoC remaining)
+  * **Max Pitch Angle:** `6.3°` (smoothly skirts around the `1.37m` central hill)
 * Outputs are saved automatically to:
   * `results/telemetry_logs.csv`
   * `results/benchmark_comparison.png`
 
 ---
 
-## Scene Troubleshooting: Fixing Rover Flipping on Simulation Start (`scenes/topocost_arena.ttt`)
+## Automatic Scene Stabilization Notes (`src/controller.py` & `main_loop.py`)
 
-> [!WARNING]
-> **Known Scene Issue to Fix in CoppeliaSim:** When starting the simulation in `scenes/topocost_arena.ttt`, `/PioneerP3DX` may immediately launch or flip upside down on frame 1.
-
-### Why This Happens
-1. **Rover Spawn Height / Mesh Interpenetration (Primary Cause):**
-   In `build_arena.py`, `sim.createHeightfieldShape(...)` centers the heightfield's vertical bounding box around `Z = 0.0` (so the flat base sits at `Z ≈ -0.675m` rather than `Z = 0.0m`, or the terrain surface at `(-4, -4)` overlaps with the rover's wheels/chassis). When `/PioneerP3DX` spawns intersecting the terrain collision mesh (or drops from too high onto an angled triangle), the physics engine applies an extreme depenetration impulse on step 1 that flips the robot upside down.
-2. **Built-in `PioneerP3DX` Child Script Enabled:**
-   The stock `Pioneer p3dx.ttm` model in CoppeliaSim comes with an attached Lua script that immediately commands high wheel velocities using ultrasonic sensors, fighting `src/controller.py`.
-3. **Default Floor Colliding with Heightfield:**
-   If the default CoppeliaSim `ResizableFloor_5_25` is still present at `Z = 0.0` while `Terrain` is also around `Z = 0.0`, the rover collides with two overlapping static meshes simultaneously.
-
-### How to Fix `scenes/topocost_arena.ttt` in CoppeliaSim (Checklist for Scene Lead)
-1. **Adjust `/Terrain` and `/PioneerP3DX` Z-Position:**
-   * Select `Terrain` in the Scene Hierarchy, open **Position** (` Translation`), and set its Z position to `0.675` (half of the max peak height `1.35m`) so the flat ground base sits at `Z = 0.0m`.
-   * Select `PioneerP3DX` at `X = -4.0, Y = -4.0` and set its **Z Position** so the wheels sit **2–3 cm above** the terrain surface at `(-4, -4)` (e.g., `Z = 0.16` if the terrain base is at `Z = 0.0`). Make sure the chassis and caster wheel are not buried inside the terrain mesh.
-2. **Delete or Hide the Default Floor (`ResizableFloor_5_25`):**
-   * If `ResizableFloor_5_25` is in the Scene Hierarchy, delete it (or uncheck **Respondable** in its Shape Dynamics properties) so it does not intersect `Terrain`.
-3. **Disable the Built-In Lua Script on `PioneerP3DX`:**
-   * In the Scene Hierarchy, click the script icon next to `PioneerP3DX` → **Edit → Disable script** (or delete the child script) so only Python controls `leftMotor` and `rightMotor`.
-4. **Verify Physics Engine Settings:**
-   * Switch the physics engine dropdown in the top toolbar to **Bullet 2.83** (or **ODE**) with timestep `dt = 50 ms`, and save the scene (**File → Save scene** to `scenes/topocost_arena.ttt`).
-
----
-
-## Evaluation Metrics
-* **Cumulative Energy Expended (Joules & Battery SoC %)**
-* **Maximum Chassis Pitch / Roll Angle (deg)**
-* **Total Trajectory Length (m) & Travel Time (s)**
+When running `main_loop.py` on `scenes/topocost_arena.ttt`, three scene quirks are automatically handled at startup in Python:
+1. **Wheel Spawn Clearance at `(-4, -4)`:** At `(-4.0, -4.0)`, the terrain elevation is `Z ≈ 0.038m`. `RoverController.__init__` automatically lifts `/PioneerP3DX` from `Z = 0.150m` to `Z = 0.185m` prior to starting physics so the wheels do not spawn buried inside the heightfield mesh.
+2. **Built-in Demo Script Removal:** `RoverController.__init__` automatically removes `/PioneerP3DX/Script` (the default ultrasonic Braitenberg demo script) so only Python controls `leftMotor` and `rightMotor`.
+3. **Camera Frustum Boundary Smoothing:** `main_loop.py` applies a spatial Gaussian filter (`sigma = 2.0`) to `TerrainMapper.update_map()` prior to calling `plan_path()` so the transition between observed terrain inside the camera's 60° cone and unvisited `0.0m` cells outside the cone does not create artificial `>25°` slope walls.
 
 ---
 
