@@ -53,42 +53,52 @@ topocost-autonomous-rover/
 
 ---
 
-## Getting Started
+## Getting Started & Step-by-Step Testing Guide
 
 ### 1. Prerequisites
 * **CoppeliaSim Edu** (v4.7 or newer)
 * **Python** 3.10+
 
 ### 2. Installation
-Create a virtual environment and install the required Python packages from `requirements.txt`:
+Clone the repository, create a virtual environment, and install the required Python packages from `requirements.txt`:
 
 ```bash
+git clone https://github.com/Simplicity005/topocost-autonomous-rover.git
+cd topocost-autonomous-rover
 python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
+source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
 *(Dependencies: `coppeliasim-zmqremoteapi-client`, `numpy`, `scipy`, `matplotlib`, `opencv-python`)*
 
-### 3. Running the Simulation
-1. Open **CoppeliaSim** and load `scenes/topocost_arena.ttt`.
-2. Run the master simulation loop in either **TopoCost (Energy-Optimal)** or **Baseline (Shortest-Distance)** mode:
+### 3. Opening the Scene in CoppeliaSim
+1. Launch **CoppeliaSim**.
+2. Click **File → Open scene...** and load `scenes/topocost_arena.ttt`.
+3. **Important:** Leave the simulation **Stopped** inside CoppeliaSim (do **not** press Play manually). `main_loop.py` automatically starts, steps (`50ms`), and stops CoppeliaSim via ZeroMQ.
 
+### 4. Running the Simulation Modes
+With CoppeliaSim open and `scenes/topocost_arena.ttt` loaded, run any of the following in your terminal:
+
+#### Option A: Full Integrated **TopoCost** (Energy-Optimal) Mode
+Runs all 3 modules together—the onboard depth camera updates the 2.5D elevation map every `0.5s` (10 steps), A* replans the lowest-battery path around steep slopes, and the controller drives `/PioneerP3DX` along the **green** 3D line:
 ```bash
-# Run elevation-aware energy-optimized planner (default)
 .venv/bin/python main_loop.py --mode topocost
+```
 
-# Run standard 2D shortest-path planner for comparison
+#### Option B: **Baseline** (Shortest 2D Distance) Mode for Comparison
+Draws a **red** 3D line and plans using Euclidean 2D distance (ignoring uphill energy costs unless slope exceeds the 25° rollover cutoff):
+```bash
 .venv/bin/python main_loop.py --mode baseline
+```
 
-# Run standalone controller test using mock S-curve waypoints
+#### Option C: Standalone Member 3 Controller Test (Mock Waypoints)
+Tests purely the Pure Pursuit controller, 3D path rendering, and telemetry logger along a fixed S-curve waypoint list (without requiring `DepthCamera` or replanning):
+```bash
 .venv/bin/python main_loop.py --mock
 ```
 
-3. View the generated telemetry log in `results/telemetry_logs.csv` and the 3-panel comparison plot in `results/benchmark_comparison.png`.
-
-### 4. Standalone Module Tests
-Each module can also be tested independently:
-
+#### Option D: Standalone Module Tests (Member 1 & Member 2)
 ```bash
 # Test Member 1 live 2.5D depth-camera elevation mapping (requires CoppeliaSim open)
 .venv/bin/python -m src.perception
@@ -96,6 +106,43 @@ Each module can also be tested independently:
 # Test Member 2 Baseline vs. TopoCost A* on a synthetic hill (no simulator needed)
 .venv/bin/python -m src.planner
 ```
+
+### 5. Viewing Telemetry Outputs
+When the rover reaches the goal (or when you stop the run with `Ctrl+C`):
+* CoppeliaSim stops automatically.
+* A **3-panel Matplotlib window** pops up displaying:
+  1. **Rover 2D Trajectory** (`X` vs `Y` in meters)
+  2. **Battery State of Charge (`SoC %`)** vs. simulation time
+  3. **Rover Pitch Angle (`deg`)** vs. simulation time
+* Outputs are saved automatically to:
+  * `results/telemetry_logs.csv`
+  * `results/benchmark_comparison.png`
+
+---
+
+## Scene Troubleshooting: Fixing Rover Flipping on Simulation Start (`scenes/topocost_arena.ttt`)
+
+> [!WARNING]
+> **Known Scene Issue to Fix in CoppeliaSim:** When starting the simulation in `scenes/topocost_arena.ttt`, `/PioneerP3DX` may immediately launch or flip upside down on frame 1.
+
+### Why This Happens
+1. **Rover Spawn Height / Mesh Interpenetration (Primary Cause):**
+   In `build_arena.py`, `sim.createHeightfieldShape(...)` centers the heightfield's vertical bounding box around `Z = 0.0` (so the flat base sits at `Z ≈ -0.675m` rather than `Z = 0.0m`, or the terrain surface at `(-4, -4)` overlaps with the rover's wheels/chassis). When `/PioneerP3DX` spawns intersecting the terrain collision mesh (or drops from too high onto an angled triangle), the physics engine applies an extreme depenetration impulse on step 1 that flips the robot upside down.
+2. **Built-in `PioneerP3DX` Child Script Enabled:**
+   The stock `Pioneer p3dx.ttm` model in CoppeliaSim comes with an attached Lua script that immediately commands high wheel velocities using ultrasonic sensors, fighting `src/controller.py`.
+3. **Default Floor Colliding with Heightfield:**
+   If the default CoppeliaSim `ResizableFloor_5_25` is still present at `Z = 0.0` while `Terrain` is also around `Z = 0.0`, the rover collides with two overlapping static meshes simultaneously.
+
+### How to Fix `scenes/topocost_arena.ttt` in CoppeliaSim (Checklist for Scene Lead)
+1. **Adjust `/Terrain` and `/PioneerP3DX` Z-Position:**
+   * Select `Terrain` in the Scene Hierarchy, open **Position** (` Translation`), and set its Z position to `0.675` (half of the max peak height `1.35m`) so the flat ground base sits at `Z = 0.0m`.
+   * Select `PioneerP3DX` at `X = -4.0, Y = -4.0` and set its **Z Position** so the wheels sit **2–3 cm above** the terrain surface at `(-4, -4)` (e.g., `Z = 0.16` if the terrain base is at `Z = 0.0`). Make sure the chassis and caster wheel are not buried inside the terrain mesh.
+2. **Delete or Hide the Default Floor (`ResizableFloor_5_25`):**
+   * If `ResizableFloor_5_25` is in the Scene Hierarchy, delete it (or uncheck **Respondable** in its Shape Dynamics properties) so it does not intersect `Terrain`.
+3. **Disable the Built-In Lua Script on `PioneerP3DX`:**
+   * In the Scene Hierarchy, click the script icon next to `PioneerP3DX` → **Edit → Disable script** (or delete the child script) so only Python controls `leftMotor` and `rightMotor`.
+4. **Verify Physics Engine Settings:**
+   * Switch the physics engine dropdown in the top toolbar to **Bullet 2.83** (or **ODE**) with timestep `dt = 50 ms`, and save the scene (**File → Save scene** to `scenes/topocost_arena.ttt`).
 
 ---
 
